@@ -11,9 +11,11 @@ BASE_DIR = "/workspace/assignment4-data/cs336_data"
 FASTTEXT_LANG_MODEL = os.path.join(BASE_DIR, "lid.176.bin")
 FASTTEXT_NSFW_MODEL = os.path.join(BASE_DIR, "jigsaw_fasttext_bigrams_nsfw_final.bin")
 FASTTEXT_HATE_SPEECH_MODEL = os.path.join(BASE_DIR, "jigsaw_fasttext_bigrams_hatespeech_final.bin")
+FASTTEXT_QUALITY_MODEL = os.path.join(BASE_DIR, "fasttext_quality_model.bin")
 _fasttext_lang_model = None
 _fasttext_nsfw_model = None
 _fasttext_hatespeech_model = None
+_fasttext_quality_model = None
 
 def extract_text_from_html_bytes(html_bytes: bytes) -> str:
     try:
@@ -70,6 +72,16 @@ def classify_toxic_speech(text: str) -> tuple[Any, float]:
         _fasttext_hatespeech_model = fasttext.load_model(FASTTEXT_HATE_SPEECH_MODEL)
     predictions = _fasttext_hatespeech_model.predict(text.replace("\n", " "))
     label = predictions[0][0]  # e.g., '__label__hatespeech'
+    label = label.replace("__label__", "")
+    score = float(predictions[1][0])
+    return label, score
+
+def classify_quality(text: str) -> tuple[Any, float]:
+    global _fasttext_quality_model
+    if _fasttext_quality_model is None:
+        _fasttext_quality_model = fasttext.load_model(FASTTEXT_QUALITY_MODEL)
+    predictions = _fasttext_quality_model.predict(text.replace("\n", " "))
+    label = predictions[0][0]  # e.g., '__label__good'
     label = label.replace("__label__", "")
     score = float(predictions[1][0])
     return label, score

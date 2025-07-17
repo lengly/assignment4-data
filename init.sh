@@ -6,3 +6,6 @@ cd ..
 
 git config --global user.email "liu_yuda@163.com"
 git config --global user.name "lengly"
+
+apt-get update
+apt-get install parallel
