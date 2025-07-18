@@ -135,10 +135,10 @@ if __name__ == "__main__":
                 if num_ips > 0:
                     print("mask_ips:", (masked_ip_text[:200] + '...', num_ips))
                 nsfw_label, nsfw_score = classify_nsfw(text)
-                if nsfw_label != "neutral":
+                if nsfw_label != "nsfw":
                     print("classify_nsfw:", (nsfw_label, nsfw_score))
                 toxic_label, toxic_score = classify_toxic_speech(text)
-                if toxic_label != "neutral":
+                if toxic_label != "non-toxic":
                     print("classify_toxic_speech:", (toxic_label, toxic_score))
                 if gopher_quality_filter(text):
                     print("gopher_quality_filter: True")
