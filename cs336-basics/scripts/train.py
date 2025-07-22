@@ -54,8 +54,30 @@ if torch.cuda.is_available():
 
 install(show_locals=True)
 
+import glob
 
-@hydra.main(version_base=None, config_path=str(Path("configs").absolute().resolve()), config_name="config")
+def fast_concat_npy_files(directory):
+    npy_files = sorted(glob.glob(os.path.join(directory, "*.npy")))
+    # 1. 统计总长度
+    total_len = 0
+    file_lengths = []
+    for file in npy_files:
+        arr = np.load(file, mmap_mode="r")
+        arr = arr.reshape(-1)
+        file_lengths.append(arr.shape[0])
+        total_len += arr.shape[0]
+    # 2. 预分配大数组
+    out = np.empty(total_len, dtype=np.uint16)
+    # 3. 填充数据
+    idx = 0
+    for file, length in zip(npy_files, file_lengths):
+        arr = np.load(file, mmap_mode="r").reshape(-1)
+        out[idx:idx+length] = arr
+        idx += length
+    return out
+
+
+@hydra.main(version_base=None, config_path=str(Path("cs336-basics/configs").absolute().resolve()), config_name="experiment/your_data")
 def main(cfg: Config) -> None:
     cfg_dict = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
     pprint(cfg_dict)
@@ -64,8 +86,9 @@ def main(cfg: Config) -> None:
     default_cfg = OmegaConf.structured(Config())
     cfg = OmegaConf.merge(default_cfg, cfg_dict)
 
-    train_data = np.memmap(cfg.paths.train_bin, dtype=np.uint16, mode="r")
-    dev_data = np.memmap(cfg.paths.valid_bin, dtype=np.uint16, mode="r")
+    train_data = fast_concat_npy_files(cfg.paths.train_bin)
+    dev_data = fast_concat_npy_files(cfg.paths.valid_bin)
+    # dev_data = np.memmap(cfg.paths.valid_bin, dtype=np.uint16, mode="r")
     model = BasicsTransformerLM(
         vocab_size=cfg.model.vocab_size,
         context_length=cfg.model.context_length,
