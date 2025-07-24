@@ -32,8 +32,8 @@ def get_batch(
 
 class UniformMixDataLoader:
     """
-    Uniformly mix data from all npy files, ensuring each batch is globally shuffled.
-    Each batch consists of samples from all files, with global shuffle of all possible (file, offset) pairs.
+    On each next, randomly select a file and sequentially read context_length from the last read position.
+    When all files are exhausted, reset offsets and start over. No shuffling within each file.
     Usage:
         loader = UniformMixDataLoader(directory, batch_size, context_length)
         batch_x, batch_y = next(loader)
@@ -43,38 +43,50 @@ class UniformMixDataLoader:
         self.batch_size = batch_size
         self.context_length = context_length
         self.file_lengths = []
+        self.arrays = []
         for f in self.npy_files:
             arr = np.load(f, mmap_mode="r")
             self.file_lengths.append(len(arr))
-        self._build_sampling_pool()
-        self.arrays = [None for _ in self.npy_files]
-
-    def _build_sampling_pool(self):
-        # Build a list of (file_idx, offset) for all files
-        self.sampling_pool = []
-        for file_idx, length in enumerate(self.file_lengths):
-            for offset in range(0, length - self.context_length - 1, self.context_length):
-                self.sampling_pool.append((file_idx, offset))
-        random.seed(42)
-        random.shuffle(self.sampling_pool)
-        self.pool_pos = 0
-
+            self.arrays.append(arr)
+        # Track the current offset for each file
+        self.offsets = [0 for _ in self.npy_files]
+        # The maximum valid offset for each file (last possible starting index)
+        self.max_offsets = [l - context_length - 1 for l in self.file_lengths]
+        # Track whether each file is exhausted
+        self.finished = [False for _ in self.npy_files]
+    
     def __iter__(self):
         return self
 
     def __next__(self):
-        if self.pool_pos + self.batch_size > len(self.sampling_pool):
-            self._build_sampling_pool()  # New epoch
+        """
+        Randomly select a file that is not exhausted, read a chunk of context_length from the current offset,
+        and advance the offset. When all files are exhausted, reset offsets and finished flags.
+        No shuffling within each file.
+        """
         batch_x, batch_y = [], []
+        available_files = [i for i, done in enumerate(self.finished) if not done and self.max_offsets[i] >= 0]
+        if len(available_files) == 0:
+            # All files are exhausted, reset offsets and finished flags
+            self.offsets = [0 for _ in self.npy_files]
+            self.finished = [False for _ in self.npy_files]
+            available_files = [i for i, done in enumerate(self.finished) if not done and self.max_offsets[i] >= 0]
         for _ in range(self.batch_size):
-            file_idx, offset = self.sampling_pool[self.pool_pos]
-            if self.arrays[file_idx] is None:
-                self.arrays[file_idx] = np.load(self.npy_files[file_idx], mmap_mode="r")
+            if not available_files:
+                break
+            file_idx = random.choice(available_files)
+            offset = self.offsets[file_idx]
             arr = self.arrays[file_idx]
             x = arr[offset:offset+self.context_length]
             y = arr[offset+1:offset+self.context_length+1]
             batch_x.append(x)
             batch_y.append(y)
-            self.pool_pos += 1
+            self.offsets[file_idx] += self.context_length
+            # Check if the file is exhausted
+            if self.offsets[file_idx] > self.max_offsets[file_idx]:
+                self.finished[file_idx] = True
+                available_files = [i for i in available_files if i != file_idx]
+        if not batch_x:
+            raise StopIteration
         return np.stack(batch_x), np.stack(batch_y)
 

@@ -3,7 +3,7 @@ import csv
 import subprocess
 import re
 import os
-
+os.environ["WANDB_MODE"] = "disabled"
 # Number of experiments
 N = 10
 # List to store results
@@ -24,6 +24,7 @@ for i in range(N):
 
     # Build the command
     cmd = [
+        'uv','run',
         'python', TRAIN_SCRIPT,
         f'--config-name={CONFIG_NAME}',
         f'training.embeddings_scale={embeddings_scale}',

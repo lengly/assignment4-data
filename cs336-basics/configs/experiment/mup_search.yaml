@@ -12,8 +12,8 @@ model:
   rope_theta: 10000.0
 
 paths:
-  train_bin: /workspace/data/train
-  valid_bin: /workspace/data/val
+  train_bin: /workspace/dataset/train
+  valid_bin: /workspace/dataset/val
   model_output: output/mup_search
 
 # batch size: 128*2048=262k tokens
@@ -25,6 +25,8 @@ training:
   eval_batch_size: 128
   train_steps: 2000
   gradient_accumulation_steps: 1
-  eval_iterations: 1000
-  eval_interval: 2000
+  eval_iterations: 200
+  eval_interval: 4000
   lr: 1e-3
+  embeddings_scale: 1.0
+  init_std: 0.02

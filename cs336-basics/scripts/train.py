@@ -64,7 +64,9 @@ def main(cfg: Config) -> None:
     cfg = OmegaConf.merge(default_cfg, cfg_dict)
 
     # Use UniformMixDataLoader for training data
+    print("Creating train loader")
     train_loader = UniformMixDataLoader(cfg.paths.train_bin, cfg.training.train_batch_size, cfg.model.context_length)
+    print("Train loader created")
     model = BasicsTransformerLM(
         vocab_size=cfg.model.vocab_size,
         context_length=cfg.model.context_length,
@@ -146,7 +148,9 @@ def main(cfg: Config) -> None:
 
     # compile the model, requires torch 2.0
     if cfg.training.compile:
+        print("Compiling model")
         model = torch.compile(model)
+        print("Model compiled")
 
     if is_ddp:
         model = DDP(model, device_ids=[ddp_local_rank])
