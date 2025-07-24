@@ -73,6 +73,8 @@ def main(cfg: Config) -> None:
         num_heads=cfg.model.num_heads,
         d_ff=cfg.model.d_ff,
         rope_theta=cfg.model.rope_theta,
+        std=cfg.training.init_std,
+        embeddings_scale=cfg.training.embeddings_scale,
     )
     pprint(model)
 

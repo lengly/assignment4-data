@@ -50,6 +50,10 @@ class TrainingConfig:
     wandb_entity: str | None = None
     log_interval: int = 20
     save_checkpoints: bool = False
+    # muP params
+    embeddings_scale: float = 1.0
+    init_std: float = 0.02
+    
 
 @dataclass
 class Config:

@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 class Linear(nn.Module):
-    def __init__(self, d_in: int, d_out: int):
+    def __init__(self, d_in: int, d_out: int, std: float = None):
         """A linear layer initialized with truncated normal fan-in fan-out.
 
         Args:
@@ -40,12 +40,15 @@ class Linear(nn.Module):
                 The number of input features.
             d_out: int
                 The number of output features.
+            std: float
+                The std for initialization. If None, use default formula.
         """
 
         super().__init__()
-        std = math.sqrt(2 / (d_in + d_out))
-        self.weight: Float[Tensor, " d_out d_in"] = nn.Parameter(
-            nn.init.trunc_normal_(torch.empty(d_out, d_in), std=std, a=-3 * std, b=3 * std), requires_grad=True
+        if std is None:
+            std = math.sqrt(2 / (d_in + d_out))
+        self.weight = nn.Parameter(
+            nn.init.trunc_normal_(torch.empty(d_out, d_in), std=std, a=-2 * std, b=2 * std), requires_grad=True
         )
 
     def forward(self, x: Float[Tensor, " ... d_in"]) -> Float[Tensor, " ... d_out"]:
@@ -56,15 +59,15 @@ class Linear(nn.Module):
 
 
 class Embedding(nn.Module):
-    def __init__(self, vocab_size: int, d_model: int):
+    def __init__(self, vocab_size: int, d_model: int, std: float = 0.02, scale: float = 1.0):
         super().__init__()
-        std = 1.0
         self.weight = nn.Parameter(
-            nn.init.trunc_normal_(torch.empty(vocab_size, d_model), std=std, a=-3 * std, b=3 * std), requires_grad=True
+            nn.init.trunc_normal_(torch.empty(vocab_size, d_model), std=std, a=-2 * std, b=2 * std), requires_grad=True
         )
+        self.scale = scale
 
-    def forward(self, token_ids: Int[Tensor, " ..."]) -> Float[Tensor, " ... d_model"]:
-        return self.weight[token_ids, :]
+    def forward(self, token_ids):
+        return self.weight[token_ids, :] * self.scale
 
     def extra_repr(self):
         return f"vocab_size={self.weight.shape[0]}, d={self.weight.shape[1]}"
@@ -128,6 +131,10 @@ class BasicsTransformerLM(nn.Module):
             Dimensionality of the feed-forward inner layer (section 3.3).
         rope_theta: float
             The theta value for the RoPE positional encoding.
+        std: float
+            The std for initialization.
+        embeddings_scale: float
+            The scale for the embeddings.
 
     Returns:
         FloatTensor of shape (batch size, sequence_length, vocab_size) with the
@@ -143,6 +150,8 @@ class BasicsTransformerLM(nn.Module):
         num_heads: int,
         d_ff: int,
         rope_theta: float,
+        std: float = 0.02,
+        embeddings_scale: float = 1.0,
     ):
         # Store the model configuration for serialization / deserialization
         self.config = {
@@ -152,7 +161,7 @@ class BasicsTransformerLM(nn.Module):
         self.vocab_size = vocab_size
         self.context_length = context_length
         self.d_model = d_model
-        self.token_embeddings = Embedding(vocab_size, d_model)
+        self.token_embeddings = Embedding(vocab_size, d_model, std=std, scale=embeddings_scale)
         d_head = d_model // num_heads
         self.positional_encoder = RotaryEmbedding(context_length=context_length, dim=d_head, theta=rope_theta)
         self.layers = nn.ModuleList(
@@ -162,12 +171,13 @@ class BasicsTransformerLM(nn.Module):
                     num_heads=num_heads,
                     d_ff=d_ff,
                     positional_encoder=self.positional_encoder,
+                    std=std,
                 )
                 for _ in range(num_layers)
             ]
         )
         self.ln_final = nn.RMSNorm(d_model)
-        self.lm_head = Linear(d_model, vocab_size)
+        self.lm_head = Linear(d_model, vocab_size, std=std)
 
         # report number of parameters
         logger.info(f"number of non-embedding parameters: {self.get_num_params() / 1e6:.2f}M")
@@ -311,14 +321,16 @@ class TransformerBlock(nn.Module):
         num_heads: int,
         d_ff: int,
         positional_encoder: RotaryEmbedding,
+        std: float = 0.02,
     ):
         super().__init__()
         self.attn = CausalMultiHeadSelfAttention(
             d_model=d_model,
             num_heads=num_heads,
             positional_encoder=positional_encoder,
+            std=std,
         )
-        self.ffn = SwiGLU(d_model=d_model, d_ff=d_ff)
+        self.ffn = SwiGLU(d_model=d_model, d_ff=d_ff, std=std)
         self.ln1 = nn.RMSNorm(d_model)
         self.ln2 = nn.RMSNorm(d_model)
 
@@ -344,11 +356,11 @@ class TransformerBlock(nn.Module):
 
 
 class SwiGLU(nn.Module):
-    def __init__(self, d_model: int, d_ff: int):
+    def __init__(self, d_model: int, d_ff: int, std: float = 0.02):
         super().__init__()
-        self.w1 = Linear(d_model, d_ff)
-        self.w2 = Linear(d_ff, d_model)
-        self.w3 = Linear(d_model, d_ff)
+        self.w1 = Linear(d_model, d_ff, std=std)
+        self.w2 = Linear(d_ff, d_model, std=std)
+        self.w3 = Linear(d_model, d_ff, std=std)
 
     def forward(self, x):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
@@ -380,6 +392,7 @@ class CausalMultiHeadSelfAttention(nn.Module):
         d_model: int,
         num_heads: int,
         positional_encoder: RotaryEmbedding,
+        std: float = 0.02,
     ):
         super().__init__()
         assert d_model % num_heads == 0
@@ -389,11 +402,11 @@ class CausalMultiHeadSelfAttention(nn.Module):
         self.d_k = d_model // num_heads
         self.d_v = self.d_k
 
-        self.q_proj = Linear(self.d_model, self.num_heads * self.d_k)
-        self.k_proj = Linear(self.d_model, self.num_heads * self.d_k)
-        self.v_proj = Linear(self.d_model, self.num_heads * self.d_v)
+        self.q_proj = Linear(self.d_model, self.num_heads * self.d_k, std=std)
+        self.k_proj = Linear(self.d_model, self.num_heads * self.d_k, std=std)
+        self.v_proj = Linear(self.d_model, self.num_heads * self.d_v, std=std)
 
-        self.output_proj = Linear(self.num_heads * self.d_v, self.d_model)
+        self.output_proj = Linear(self.num_heads * self.d_v, self.d_model, std=std)
 
         self.positional_encoder = positional_encoder  # RoPE
 
