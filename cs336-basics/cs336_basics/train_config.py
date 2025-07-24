@@ -41,7 +41,9 @@ class TrainingConfig:
     max_grad_norm: float | None = 1.0
     device: str = "cuda"
     lr: float = 1e-3
-    warmup_ratio: float = 0.01
+    warmup_ratio: float = 0.05
+    stable_ratio: float = 0.85
+    decay_ratio: float = 0.10
     weight_decay: float = 0.1
     adam_beta1: float = 0.9
     adam_beta2: float = 0.98

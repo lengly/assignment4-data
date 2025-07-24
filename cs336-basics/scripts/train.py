@@ -42,7 +42,7 @@ from tqdm import tqdm, trange
 import wandb
 from cs336_basics.data import UniformMixDataLoader
 from cs336_basics.model import BasicsTransformerLM
-from cs336_basics.optimizer import get_cosine_lr
+from cs336_basics.optimizer import get_cosine_lr, get_wsd_lr
 from cs336_basics.train_config import Config, register_configs
 
 register_configs()
@@ -177,12 +177,13 @@ def main(cfg: Config) -> None:
     batch_x = torch.tensor(batch_x, dtype=torch.long, device=cfg.training.device)
     batch_y = torch.tensor(batch_y, dtype=torch.long, device=cfg.training.device)
     for i in (pbar := trange(cfg.training.train_steps, desc="Training", disable=not is_master_process)):
-        lr = get_cosine_lr(
+        lr = get_wsd_lr(
             i,
             max_learning_rate=cfg.training.lr,
             min_learning_rate=cfg.training.lr * 0.1,
             warmup_iters=int(cfg.training.train_steps * cfg.training.warmup_ratio),
-            cosine_cycle_iters=cfg.training.train_steps,
+            stable_iters=int(cfg.training.train_steps * cfg.training.stable_ratio),
+            decay_iters=int(cfg.training.train_steps * cfg.training.decay_ratio),
         )
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr

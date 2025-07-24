@@ -22,3 +22,21 @@ def get_cosine_lr(
     assert 0 <= decay_ratio <= 1
     coeff = 0.5 * (1.0 + math.cos(math.pi * decay_ratio))
     return min_learning_rate + coeff * (max_learning_rate - min_learning_rate)
+
+def get_wsd_lr(
+    it: int,
+    max_learning_rate: float,
+    min_learning_rate: float,
+    warmup_iters: int,
+    stable_iters: int,
+    decay_iters: int,
+):
+    """Warmup-then-decay learning rate scheduler."""
+    if it < warmup_iters:
+        return max_learning_rate * it / warmup_iters
+    if it < warmup_iters + stable_iters:
+        return max_learning_rate
+    if it < warmup_iters + stable_iters + decay_iters:
+        return min_learning_rate + (max_learning_rate - min_learning_rate) * (1 - (it - warmup_iters - stable_iters) / decay_iters)
+    return min_learning_rate
+
