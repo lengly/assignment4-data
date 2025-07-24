@@ -40,7 +40,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm, trange
 
 import wandb
-from cs336_basics.data import get_batch
+from cs336_basics.data import UniformMixDataLoader
 from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.optimizer import get_cosine_lr
 from cs336_basics.train_config import Config, register_configs
@@ -54,29 +54,6 @@ if torch.cuda.is_available():
 
 install(show_locals=True)
 
-import glob
-
-def fast_concat_npy_files(directory):
-    npy_files = sorted(glob.glob(os.path.join(directory, "*.npy")))
-    # 1. 统计总长度
-    total_len = 0
-    file_lengths = []
-    for file in npy_files:
-        arr = np.load(file, mmap_mode="r")
-        arr = arr.reshape(-1)
-        file_lengths.append(arr.shape[0])
-        total_len += arr.shape[0]
-    # 2. 预分配大数组
-    out = np.empty(total_len, dtype=np.uint16)
-    # 3. 填充数据
-    idx = 0
-    for file, length in zip(npy_files, file_lengths):
-        arr = np.load(file, mmap_mode="r").reshape(-1)
-        out[idx:idx+length] = arr
-        idx += length
-    return out
-
-
 @hydra.main(version_base=None, config_path=str(Path("cs336-basics/configs").absolute().resolve()), config_name="experiment/your_data")
 def main(cfg: Config) -> None:
     cfg_dict = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
@@ -86,9 +63,8 @@ def main(cfg: Config) -> None:
     default_cfg = OmegaConf.structured(Config())
     cfg = OmegaConf.merge(default_cfg, cfg_dict)
 
-    train_data = fast_concat_npy_files(cfg.paths.train_bin)
-    dev_data = fast_concat_npy_files(cfg.paths.valid_bin)
-    # dev_data = np.memmap(cfg.paths.valid_bin, dtype=np.uint16, mode="r")
+    # Use UniformMixDataLoader for training data
+    train_loader = UniformMixDataLoader(cfg.paths.train_bin, cfg.training.train_batch_size, cfg.model.context_length)
     model = BasicsTransformerLM(
         vocab_size=cfg.model.vocab_size,
         context_length=cfg.model.context_length,
@@ -195,12 +171,9 @@ def main(cfg: Config) -> None:
     )
 
     # Get the first batch
-    batch_x, batch_y = get_batch(
-        train_data,
-        batch_size=cfg.training.train_batch_size,
-        context_length=cfg.model.context_length,
-        device=cfg.training.device,
-    )
+    batch_x, batch_y = next(train_loader)
+    batch_x = torch.tensor(batch_x, dtype=torch.long, device=cfg.training.device)
+    batch_y = torch.tensor(batch_y, dtype=torch.long, device=cfg.training.device)
     for i in (pbar := trange(cfg.training.train_steps, desc="Training", disable=not is_master_process)):
         lr = get_cosine_lr(
             i,
@@ -221,12 +194,9 @@ def main(cfg: Config) -> None:
                 logits = model(batch_x)
 
                 # immediately async prefetch next batch while model is doing the forward pass on the GPU
-                next_batch_x, next_batch_y = get_batch(
-                    train_data,
-                    batch_size=cfg.training.train_batch_size,
-                    context_length=cfg.model.context_length,
-                    device=cfg.training.device,
-                )
+                next_batch_x, next_batch_y = next(train_loader)
+                next_batch_x = torch.tensor(next_batch_x, dtype=torch.long, device=cfg.training.device)
+                next_batch_y = torch.tensor(next_batch_y, dtype=torch.long, device=cfg.training.device)
 
                 # Calculate the loss with the logits
                 loss = (
@@ -255,7 +225,7 @@ def main(cfg: Config) -> None:
         if i != 0 and i % cfg.training.eval_interval == 0 and is_master_process:
             dev_loss = estimate_dev_loss(
                 model=model,
-                dev_dataset=dev_data,
+                val_dataset=cfg.paths.valid_bin,
                 batch_size=cfg.training.eval_batch_size,
                 eval_iters=cfg.training.eval_iterations,
                 device=cfg.training.device,
@@ -281,7 +251,7 @@ def main(cfg: Config) -> None:
     if is_master_process:
         dev_loss = estimate_dev_loss(
             model=model,
-            dev_dataset=dev_data,
+            val_dataset=cfg.paths.valid_bin,
             batch_size=cfg.training.eval_batch_size,
             eval_iters=cfg.training.eval_iterations,
             device=cfg.training.device,
@@ -303,21 +273,19 @@ def main(cfg: Config) -> None:
 @torch.no_grad()
 def estimate_dev_loss(
     model: BasicsTransformerLM,
-    dev_dataset: npt.NDArray,
+    val_dataset: str,
     batch_size: int,
     eval_iters: int,
     device: str,
     context_length: int,
 ):
+    val_loader = UniformMixDataLoader(val_dataset, batch_size, context_length)
     model.eval()
     losses = torch.zeros(eval_iters, device=device)
     for k in tqdm(range(eval_iters)):
-        batch_x, batch_y = get_batch(
-            dev_dataset,
-            batch_size=batch_size,
-            context_length=context_length,
-            device=device,
-        )
+        batch_x, batch_y = next(val_loader)
+        batch_x = torch.tensor(batch_x, dtype=torch.long, device=device)
+        batch_y = torch.tensor(batch_y, dtype=torch.long, device=device)
         logits = model(batch_x)
         loss = F.cross_entropy(logits.view(-1, logits.size(-1)), batch_y.view(-1))
         losses[k] = loss.item()
