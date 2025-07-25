@@ -26,30 +26,16 @@ from einops import einsum, rearrange
 from jaxtyping import Float, Int
 from torch import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
-
+from cs336_basics.train_config import Config
 
 logger = logging.getLogger(__name__)
 
 
 class Linear(nn.Module):
-    def __init__(self, d_in: int, d_out: int, std: float = None):
-        """A linear layer initialized with truncated normal fan-in fan-out.
-
-        Args:
-            d_in: int
-                The number of input features.
-            d_out: int
-                The number of output features.
-            std: float
-                The std for initialization. If None, use default formula.
-        """
-
+    def __init__(self, d_in: int, d_out: int):
+        """A linear layer without initialization. Weight will be initialized externally."""
         super().__init__()
-        if std is None:
-            std = math.sqrt(2 / (d_in + d_out))
-        self.weight = nn.Parameter(
-            nn.init.trunc_normal_(torch.empty(d_out, d_in), std=std, a=-2 * std, b=2 * std), requires_grad=True
-        )
+        self.weight = nn.Parameter(torch.empty(d_out, d_in), requires_grad=True)
 
     def forward(self, x: Float[Tensor, " ... d_in"]) -> Float[Tensor, " ... d_out"]:
         return einsum(x, self.weight, "... d_in, d_out d_in -> ... d_out")
@@ -59,15 +45,12 @@ class Linear(nn.Module):
 
 
 class Embedding(nn.Module):
-    def __init__(self, vocab_size: int, d_model: int, std: float = 0.02, scale: float = 1.0):
+    def __init__(self, vocab_size: int, d_model: int):
         super().__init__()
-        self.weight = nn.Parameter(
-            nn.init.trunc_normal_(torch.empty(vocab_size, d_model), std=std, a=-2 * std, b=2 * std), requires_grad=True
-        )
-        self.scale = scale
+        self.weight = nn.Parameter(torch.empty(vocab_size, d_model), requires_grad=True)
 
     def forward(self, token_ids):
-        return self.weight[token_ids, :] * self.scale
+        return self.weight[token_ids, :]
 
     def extra_repr(self):
         return f"vocab_size={self.weight.shape[0]}, d={self.weight.shape[1]}"
@@ -131,8 +114,6 @@ class BasicsTransformerLM(nn.Module):
             Dimensionality of the feed-forward inner layer (section 3.3).
         rope_theta: float
             The theta value for the RoPE positional encoding.
-        std: float
-            The std for initialization.
         embeddings_scale: float
             The scale for the embeddings.
 
@@ -150,8 +131,7 @@ class BasicsTransformerLM(nn.Module):
         num_heads: int,
         d_ff: int,
         rope_theta: float,
-        std: float = 0.02,
-        embeddings_scale: float = 1.0,
+        cfg: Config,
     ):
         # Store the model configuration for serialization / deserialization
         self.config = {
@@ -161,7 +141,7 @@ class BasicsTransformerLM(nn.Module):
         self.vocab_size = vocab_size
         self.context_length = context_length
         self.d_model = d_model
-        self.token_embeddings = Embedding(vocab_size, d_model, std=std, scale=embeddings_scale)
+        self.token_embeddings = Embedding(vocab_size, d_model)
         d_head = d_model // num_heads
         self.positional_encoder = RotaryEmbedding(context_length=context_length, dim=d_head, theta=rope_theta)
         self.layers = nn.ModuleList(
@@ -171,16 +151,51 @@ class BasicsTransformerLM(nn.Module):
                     num_heads=num_heads,
                     d_ff=d_ff,
                     positional_encoder=self.positional_encoder,
-                    std=std,
                 )
                 for _ in range(num_layers)
             ]
         )
         self.ln_final = nn.RMSNorm(d_model)
-        self.lm_head = Linear(d_model, vocab_size, std=std)
+        self.lm_head = Linear(d_model, vocab_size)
+        # Share weights between lm_head and token_embeddings
+        self.lm_head.weight = self.token_embeddings.weight
+        self.embeddings_scale = cfg.training.embeddings_scale
+        self.output_logits_scale = 1 / (cfg.model.d_model / cfg.training.mup_base_hidden_size_)
+
+        # Initialize all weights
+        self._init_weights(cfg)
 
         # report number of parameters
         logger.info(f"number of non-embedding parameters: {self.get_num_params() / 1e6:.2f}M")
+
+    def _init_weights(self, cfg: Config):
+        """Initialize all weights in the model using truncated normal or default methods."""
+        filter_size_width_mult = cfg.model.d_ff / cfg.training.mup_base_filter_size
+        hidden_size_width_mult = cfg.model.d_model / cfg.training.mup_base_hidden_size
+        for name, param in self.named_parameters():
+            if "weight" not in name:
+                continue
+            if "token_embeddings" in name:
+                std = cfg.training.init_std
+                nn.init.trunc_normal_(param, std=std, a=-2 * std, b=2 * std)
+            elif "attn" in name:
+                if "output_proj" in name:
+                    std = cfg.training.init_std / (2 * hidden_size_width_mult * cfg.model.num_layers)**0.5
+                    nn.init.trunc_normal_(param, std=std, a=-2 * std, b=2 * std)
+                else:
+                    std = cfg.training.init_std / hidden_size_width_mult**0.5
+                    nn.init.trunc_normal_(param, std=std, a=-2 * std, b=2 * std)
+            elif "ffn" in name:
+                if "w2" in name: # output
+                    std = cfg.training.init_std / (2 * filter_size_width_mult * cfg.model.num_layers)**0.5
+                    nn.init.trunc_normal_(param, std=std, a=-2 * std, b=2 * std)
+                else:
+                    std = cfg.training.init_std / filter_size_width_mult**0.5
+                    nn.init.trunc_normal_(param, std=std, a=-2 * std, b=2 * std)
+            elif "lm_head" in name:
+                pass
+            else:
+                raise ValueError(f"Unknown parameter: {name}")
 
     def get_num_params(self, non_embedding=True):
         """
@@ -206,7 +221,7 @@ class BasicsTransformerLM(nn.Module):
         _, sequence_length = x.size()
 
         # (batch size, sequence_length, d_model)
-        x = self.token_embeddings(x)
+        x = self.token_embeddings(x) * self.embeddings_scale
 
         for layer in self.layers:
             # (batch size, sequence_length, d_model)
@@ -216,7 +231,7 @@ class BasicsTransformerLM(nn.Module):
         x = self.ln_final(x)
 
         # (batch size, sequence_length, vocab_size)
-        return self.lm_head(x)
+        return self.lm_head(x) * self.output_logits_scale
 
     @torch.no_grad()
     def generate(
@@ -321,16 +336,14 @@ class TransformerBlock(nn.Module):
         num_heads: int,
         d_ff: int,
         positional_encoder: RotaryEmbedding,
-        std: float = 0.02,
     ):
         super().__init__()
         self.attn = CausalMultiHeadSelfAttention(
             d_model=d_model,
             num_heads=num_heads,
             positional_encoder=positional_encoder,
-            std=std,
         )
-        self.ffn = SwiGLU(d_model=d_model, d_ff=d_ff, std=std)
+        self.ffn = SwiGLU(d_model=d_model, d_ff=d_ff)
         self.ln1 = nn.RMSNorm(d_model)
         self.ln2 = nn.RMSNorm(d_model)
 
@@ -356,11 +369,11 @@ class TransformerBlock(nn.Module):
 
 
 class SwiGLU(nn.Module):
-    def __init__(self, d_model: int, d_ff: int, std: float = 0.02):
+    def __init__(self, d_model: int, d_ff: int):
         super().__init__()
-        self.w1 = Linear(d_model, d_ff, std=std)
-        self.w2 = Linear(d_ff, d_model, std=std)
-        self.w3 = Linear(d_model, d_ff, std=std)
+        self.w1 = Linear(d_model, d_ff)
+        self.w2 = Linear(d_ff, d_model)
+        self.w3 = Linear(d_model, d_ff)
 
     def forward(self, x):
         return self.w2(F.silu(self.w1(x)) * self.w3(x))
@@ -392,7 +405,6 @@ class CausalMultiHeadSelfAttention(nn.Module):
         d_model: int,
         num_heads: int,
         positional_encoder: RotaryEmbedding,
-        std: float = 0.02,
     ):
         super().__init__()
         assert d_model % num_heads == 0
@@ -402,11 +414,11 @@ class CausalMultiHeadSelfAttention(nn.Module):
         self.d_k = d_model // num_heads
         self.d_v = self.d_k
 
-        self.q_proj = Linear(self.d_model, self.num_heads * self.d_k, std=std)
-        self.k_proj = Linear(self.d_model, self.num_heads * self.d_k, std=std)
-        self.v_proj = Linear(self.d_model, self.num_heads * self.d_v, std=std)
+        self.q_proj = Linear(self.d_model, self.num_heads * self.d_k)
+        self.k_proj = Linear(self.d_model, self.num_heads * self.d_k)
+        self.v_proj = Linear(self.d_model, self.num_heads * self.d_v)
 
-        self.output_proj = Linear(self.num_heads * self.d_v, self.d_model, std=std)
+        self.output_proj = Linear(self.num_heads * self.d_v, self.d_model)
 
         self.positional_encoder = positional_encoder  # RoPE
 

@@ -27,6 +27,6 @@ training:
   gradient_accumulation_steps: 4
   eval_iterations: 800
   eval_interval: 4000
-  lr: 1e-3
-  embeddings_scale: 1.0
-  init_std: 0.02
+  lr: 3e-3
+  embeddings_scale: 15.0
+  init_std: 0.012

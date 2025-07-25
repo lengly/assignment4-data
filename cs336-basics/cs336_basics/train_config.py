@@ -55,6 +55,8 @@ class TrainingConfig:
     # muP params
     embeddings_scale: float = 15
     init_std: float = 0.012
+    mup_base_filter_size: int = 1024
+    mup_base_hidden_size: int = 384
     
 
 @dataclass

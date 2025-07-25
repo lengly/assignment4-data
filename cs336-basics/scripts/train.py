@@ -43,7 +43,7 @@ from tqdm import tqdm, trange
 import wandb
 from cs336_basics.data import UniformMixDataLoader
 from cs336_basics.model import BasicsTransformerLM
-from cs336_basics.optimizer import get_cosine_lr, get_wsd_lr
+from cs336_basics.optimizer import get_wsd_lr
 from cs336_basics.train_config import Config, register_configs
 
 register_configs()
@@ -65,8 +65,8 @@ def main(cfg: Config) -> None:
     cfg = OmegaConf.merge(default_cfg, cfg_dict)
 
     # Use UniformMixDataLoader for training data
-    print("Creating train loader")
-    train_loader = UniformMixDataLoader(cfg.paths.train_bin, cfg.training.train_batch_size, cfg.model.context_length)
+    # print("Creating train loader")
+    # train_loader = UniformMixDataLoader(cfg.paths.train_bin, cfg.training.train_batch_size, cfg.model.context_length)
     print("Train loader created")
     model = BasicsTransformerLM(
         vocab_size=cfg.model.vocab_size,
@@ -76,8 +76,7 @@ def main(cfg: Config) -> None:
         num_heads=cfg.model.num_heads,
         d_ff=cfg.model.d_ff,
         rope_theta=cfg.model.rope_theta,
-        std=cfg.training.init_std,
-        embeddings_scale=cfg.training.embeddings_scale,
+        cfg=cfg,
     )
     pprint(model)
 
@@ -162,16 +161,31 @@ def main(cfg: Config) -> None:
     # In particular, we do not apply decay on 1D parameters (e.g., biases and RMSNorms)
     # filter out those that do not require grad
     param_dict = {pn: p for pn, p in model.named_parameters() if p.requires_grad}
-    params_to_decay = [p for _, p in param_dict.items() if p.dim() >= 2]
-    params_to_not_decay = [p for _, p in param_dict.items() if p.dim() < 2]
+
+    # Parameter groups for different learning rates
+    attn_params = [p for n, p in param_dict.items() if ("attn" in n and p.dim() >= 2)]
+    ffn_params = [p for n, p in param_dict.items() if ("ffn" in n and p.dim() >= 2)]
+    other_params = [p for n, p in param_dict.items() if ("attn" not in n and "ffn" not in n and p.dim() >= 2)]
+    not_decay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+
+    # Set different learning rates for attn, ffn, and other parameters
+    attn_lr_scale = cfg.training.mup_base_hidden_size / cfg.model.d_model
+    ffn_lr_scale = cfg.training.mup_base_filter_size / cfg.model.d_ff
+    attn_lr = cfg.training.lr * attn_lr_scale
+    ffn_lr = cfg.training.lr * ffn_lr_scale
+    basic_lr = cfg.training.lr
+    print(f"basic_lr: {basic_lr}, attn_lr_scale: {attn_lr_scale}, ffn_lr_scale: {ffn_lr_scale}, attn_lr: {attn_lr}, ffn_lr: {ffn_lr}")
+
     optim_groups = [
-        {"params": params_to_decay, "weight_decay": cfg.training.weight_decay},
-        {"params": params_to_not_decay, "weight_decay": 0.0},
+        {"params": attn_params, "weight_decay": cfg.training.weight_decay, "lr": attn_lr},
+        {"params": ffn_params, "weight_decay": cfg.training.weight_decay, "lr": ffn_lr},
+        {"params": other_params, "weight_decay": cfg.training.weight_decay, "lr": basic_lr},
+        {"params": not_decay_params, "weight_decay": 0.0, "lr": basic_lr},
     ]
+
     # Create AdamW optimizer and use the fused version if it is available
     optimizer = torch.optim.AdamW(
         optim_groups,
-        lr=cfg.training.lr,
         betas=(cfg.training.adam_beta1, cfg.training.adam_beta2),
         eps=cfg.training.adam_eps,
         fused=True,
@@ -190,8 +204,11 @@ def main(cfg: Config) -> None:
             stable_iters=int(cfg.training.train_steps * cfg.training.stable_ratio),
             decay_iters=int(cfg.training.train_steps * cfg.training.decay_ratio),
         )
-        for param_group in optimizer.param_groups:
-            param_group["lr"] = lr
+        # Update learning rates for each param group
+        optimizer.param_groups[0]["lr"] = lr * attn_lr_scale  # attn
+        optimizer.param_groups[1]["lr"] = lr * ffn_lr_scale   # ffn
+        optimizer.param_groups[2]["lr"] = lr                  # other
+        optimizer.param_groups[3]["lr"] = lr                  # not_decay
 
         total_loss = 0.0
         for micro_step_idx in range(cfg.training.gradient_accumulation_steps):
