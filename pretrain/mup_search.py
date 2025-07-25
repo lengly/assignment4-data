@@ -47,12 +47,12 @@ for i in range(N):
     # Adjust the regex according to the output format of train.py if needed
     train_loss = None
     valid_loss = None
-    train_match = re.search(r"Training step [0-9]+, Loss: ([0-9\.eE+-]+)", output)
-    valid_match = re.search(r"Final estimated validation loss: ([0-9\.eE+-]+)", output)
+    train_match = re.findall(r"Training step [0-9]+, Loss: ([0-9\.eE+-]+)", output)
+    valid_match = re.findall(r"Final estimated validation loss: ([0-9\.eE+-]+)", output)
     if train_match:
-        train_loss = float(train_match.group(1))
+        train_loss = float(train_match[-1])
     if valid_match:
-        valid_loss = float(valid_match.group(1))
+        valid_loss = float(valid_match[-1])
 
     result_row = {
         'embeddings_scale': embeddings_scale,

@@ -36,6 +36,7 @@ from omegaconf import OmegaConf
 from rich.pretty import pprint as pprint
 from rich.traceback import install
 from torch.distributed import destroy_process_group, init_process_group
+import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm, trange
 
@@ -192,6 +193,7 @@ def main(cfg: Config) -> None:
         for param_group in optimizer.param_groups:
             param_group["lr"] = lr
 
+        total_loss = 0.0
         for micro_step_idx in range(cfg.training.gradient_accumulation_steps):
             if is_ddp:
                 # When using DDP, don't all-reduce gradients until the last step.
@@ -212,6 +214,7 @@ def main(cfg: Config) -> None:
                 )
 
             loss.backward()
+            total_loss += loss.item()
 
             batch_x = next_batch_x
             batch_y = next_batch_y
@@ -222,14 +225,15 @@ def main(cfg: Config) -> None:
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
 
-        loss_float = loss.item() * cfg.training.gradient_accumulation_steps
+        # record the sum of all micro-step loss
+        loss_float = total_loss
 
         if is_master_process:
             pbar.set_description(f"Training step {i}, Loss: {loss_float:.4f}")
             if cfg.training.wandb_project and i % cfg.training.log_interval == 0:
                 wandb.log({"train_loss": loss_float, "lr": lr}, step=i)
 
-        if i != 0 and i % cfg.training.eval_interval == 0 and is_master_process:
+        if i != 0 and i % cfg.training.eval_interval == 0:
             dev_loss = estimate_dev_loss(
                 model=model,
                 val_dataset=cfg.paths.valid_bin,
@@ -238,32 +242,33 @@ def main(cfg: Config) -> None:
                 device=cfg.training.device,
                 context_length=cfg.model.context_length,
             )
-            logger.info(f"Estimated validation loss: {dev_loss}")
-            if cfg.training.wandb_project:
-                wandb.log({"eval_loss": dev_loss}, step=i)
+            if is_master_process:
+                logger.info(f"Estimated validation loss: {dev_loss}")
+                if cfg.training.wandb_project:
+                    wandb.log({"eval_loss": dev_loss}, step=i)
 
-            if cfg.training.save_checkpoints:
-                model_weights_output_path = cfg.paths.model_output / f"step_{i:010d}" / "model.pt"
-                model_weights_output_path.parent.mkdir(parents=True, exist_ok=True)
+                if cfg.training.save_checkpoints:
+                    model_weights_output_path = cfg.paths.model_output / f"step_{i:010d}" / "model.pt"
+                    model_weights_output_path.parent.mkdir(parents=True, exist_ok=True)
 
-                # Need both config and weights to load the model
-                # Write config:
-                with open(model_weights_output_path.parent / "model_config.json", "w") as f:
-                    json.dump(model_config, f, indent=4)
+                    # Need both config and weights to load the model
+                    # Write config:
+                    with open(model_weights_output_path.parent / "model_config.json", "w") as f:
+                        json.dump(model_config, f, indent=4)
 
-                # Write weights:
-                torch.save(model.state_dict(), model_weights_output_path)
+                    # Write weights:
+                    torch.save(model.state_dict(), model_weights_output_path)
 
     # Calculate final estimated dev loss
+    dev_loss = estimate_dev_loss(
+        model=model,
+        val_dataset=cfg.paths.valid_bin,
+        batch_size=cfg.training.eval_batch_size,
+        eval_iters=cfg.training.eval_iterations,
+        device=cfg.training.device,
+        context_length=cfg.model.context_length,
+    )
     if is_master_process:
-        dev_loss = estimate_dev_loss(
-            model=model,
-            val_dataset=cfg.paths.valid_bin,
-            batch_size=cfg.training.eval_batch_size,
-            eval_iters=cfg.training.eval_iterations,
-            device=cfg.training.device,
-            context_length=cfg.model.context_length,
-        )
         logger.info(f"Final estimated validation loss: {dev_loss}")
         if cfg.training.wandb_project:
             wandb.log({"eval_loss": dev_loss}, step=cfg.training.train_steps)
@@ -282,23 +287,49 @@ def estimate_dev_loss(
     model: BasicsTransformerLM,
     val_dataset: str,
     batch_size: int,
-    eval_iters: int,
+    eval_iters: int | None,
     device: str,
     context_length: int,
 ):
-    val_loader = UniformMixDataLoader(val_dataset, batch_size, context_length)
+    rank = dist.get_rank() if dist.is_initialized() else 0
+    world_size = dist.get_world_size() if dist.is_initialized() else 1
+
+    val_loader = UniformMixDataLoader(
+        val_dataset, batch_size, context_length,
+        mode="eval", rank=rank, world_size=world_size,
+        eval_iterations=eval_iters
+    )
     model.eval()
-    losses = torch.zeros(eval_iters, device=device)
-    for k in tqdm(range(eval_iters)):
-        batch_x, batch_y = next(val_loader)
-        batch_x = torch.tensor(batch_x, dtype=torch.long, device=device)
-        batch_y = torch.tensor(batch_y, dtype=torch.long, device=device)
-        logits = model(batch_x)
-        loss = F.cross_entropy(logits.view(-1, logits.size(-1)), batch_y.view(-1))
-        losses[k] = loss.item()
+    losses = []
+    if eval_iters is not None:
+        for k in tqdm(range(eval_iters)):
+            batch_x, batch_y = next(val_loader)
+            batch_x = torch.tensor(batch_x, dtype=torch.long, device=device)
+            batch_y = torch.tensor(batch_y, dtype=torch.long, device=device)
+            logits = model(batch_x)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), batch_y.view(-1))
+            losses.append(loss.item())
+    else:
+        while True:
+            try:
+                batch_x, batch_y = next(val_loader)
+            except StopIteration:
+                break
+            batch_x = torch.tensor(batch_x, dtype=torch.long, device=device)
+            batch_y = torch.tensor(batch_y, dtype=torch.long, device=device)
+            logits = model(batch_x)
+            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), batch_y.view(-1))
+            losses.append(loss.item())
+
+    total_loss = torch.tensor([sum(losses)], device=device)
+    total_count = torch.tensor([len(losses)], device=device)
+    if dist.is_available() and dist.is_initialized():
+        dist.all_reduce(total_loss, op=dist.ReduceOp.SUM)
+        dist.all_reduce(total_count, op=dist.ReduceOp.SUM)
+    avg_loss = total_loss.item() / total_count.item() if total_count.item() > 0 else float('nan')
 
     model.train()
-    return losses.mean()
+    return avg_loss
 
 
 if __name__ == "__main__":
