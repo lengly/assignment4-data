@@ -36,7 +36,7 @@ class TrainingConfig:
     train_steps: int = 100_000
     gradient_accumulation_steps: int = 1
     compile: bool = True
-    eval_iterations: int = 1_000
+    eval_iterations: int | None = 1_000
     eval_interval: int = 2_000
     max_grad_norm: float | None = 1.0
     device: str = "cuda"

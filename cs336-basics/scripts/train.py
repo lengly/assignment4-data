@@ -46,6 +46,8 @@ from cs336_basics.model import BasicsTransformerLM
 from cs336_basics.optimizer import get_wsd_lr
 from cs336_basics.train_config import Config, register_configs
 
+import random
+
 register_configs()
 
 logger = logging.getLogger(__name__)
@@ -57,6 +59,7 @@ install(show_locals=True)
 
 @hydra.main(version_base=None, config_path=str(Path("cs336-basics/configs").absolute().resolve()), config_name="experiment/your_data")
 def main(cfg: Config) -> None:
+
     cfg_dict = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
     pprint(cfg_dict)
 
@@ -64,9 +67,18 @@ def main(cfg: Config) -> None:
     default_cfg = OmegaConf.structured(Config())
     cfg = OmegaConf.merge(default_cfg, cfg_dict)
 
+    seed = cfg.training.seed + (int(os.environ.get("RANK", 0)) if "RANK" in os.environ else 0)
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
     # Use UniformMixDataLoader for training data
-    # print("Creating train loader")
-    # train_loader = UniformMixDataLoader(cfg.paths.train_bin, cfg.training.train_batch_size, cfg.model.context_length)
+    print("Creating train loader")
+    train_loader = UniformMixDataLoader(cfg.paths.train_bin, cfg.training.train_batch_size, cfg.model.context_length)
     print("Train loader created")
     model = BasicsTransformerLM(
         vocab_size=cfg.model.vocab_size,
@@ -89,13 +101,11 @@ def main(cfg: Config) -> None:
         ddp_world_size = int(os.environ["WORLD_SIZE"])
         device = f"cuda:{ddp_local_rank}"
         torch.cuda.set_device(device)
-        seed = cfg.training.seed + ddp_rank  # each process gets a different seed
         # Rank 0 does logging, file creation, etc.
         is_master_process = ddp_rank == 0
         if is_master_process:
             logger.info("Using DDP")
     else:
-        seed = cfg.training.seed
         ddp_world_size = 1
         is_master_process = True
 
@@ -117,12 +127,6 @@ def main(cfg: Config) -> None:
                 config=OmegaConf.to_container(cfg, resolve=True),
                 name=cfg.paths.model_output.name,
             )
-
-    # Seed each process differently so we can be sure that they
-    # see different data batches.
-    # NOTE: This assumes that you're using torch RNG, you may have
-    # to seed numpy too as well if your code uses numpy random functions.
-    torch.manual_seed(seed)
 
     # Save the model config
     if is_master_process:

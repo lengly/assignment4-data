@@ -135,7 +135,7 @@ class BasicsTransformerLM(nn.Module):
     ):
         # Store the model configuration for serialization / deserialization
         self.config = {
-            k: v for k, v in locals().items() if k != "self" and not (k.startswith("__") and k.endswith("__"))
+            k: v for k, v in locals().items() if k != "self" and not (k.startswith("__") and k.endswith("__")) and k != "cfg"
         }
         super().__init__()
         self.vocab_size = vocab_size
@@ -160,7 +160,7 @@ class BasicsTransformerLM(nn.Module):
         # Share weights between lm_head and token_embeddings
         self.lm_head.weight = self.token_embeddings.weight
         self.embeddings_scale = cfg.training.embeddings_scale
-        self.output_logits_scale = 1 / (cfg.model.d_model / cfg.training.mup_base_hidden_size_)
+        self.output_logits_scale = 1 / (cfg.model.d_model / cfg.training.mup_base_hidden_size)
 
         # Initialize all weights
         self._init_weights(cfg)
@@ -192,7 +192,7 @@ class BasicsTransformerLM(nn.Module):
                 else:
                     std = cfg.training.init_std / filter_size_width_mult**0.5
                     nn.init.trunc_normal_(param, std=std, a=-2 * std, b=2 * std)
-            elif "lm_head" in name:
+            elif "lm_head" in name or "ln" in name:
                 pass
             else:
                 raise ValueError(f"Unknown parameter: {name}")
@@ -463,7 +463,8 @@ class CausalMultiHeadSelfAttention(nn.Module):
             key=K,
             value=V,
             is_causal=True,
-            enable_gqa=False
+            enable_gqa=False,
+            scale=1/self.d_k,
         )
 
         # Concatenate the attention output from all heads.

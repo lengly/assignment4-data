@@ -25,7 +25,7 @@ training:
   eval_batch_size: 64
   train_steps: 2000
   gradient_accumulation_steps: 4
-  eval_iterations: 800
+  eval_iterations: null
   eval_interval: 4000
   lr: 3e-3
   embeddings_scale: 15.0
