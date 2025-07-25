@@ -73,7 +73,9 @@ class UniformMixDataLoader:
             available_files = [i for i, done in enumerate(self.finished) if not done and self.max_offsets[i] >= 0]
         for _ in range(self.batch_size):
             if not available_files:
-                break
+                self.offsets = [0 for _ in self.npy_files]
+                self.finished = [False for _ in self.npy_files]
+                available_files = [i for i, done in enumerate(self.finished) if not done and self.max_offsets[i] >= 0]
             file_idx = random.choice(available_files)
             offset = self.offsets[file_idx]
             arr = self.arrays[file_idx]
@@ -86,7 +88,5 @@ class UniformMixDataLoader:
             if self.offsets[file_idx] > self.max_offsets[file_idx]:
                 self.finished[file_idx] = True
                 available_files = [i for i in available_files if i != file_idx]
-        if not batch_x:
-            raise StopIteration
         return np.stack(batch_x), np.stack(batch_y)
 

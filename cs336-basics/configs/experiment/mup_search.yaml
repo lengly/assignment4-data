@@ -4,7 +4,7 @@
 # embedding params: 19M
 model:
   vocab_size: 50257
-  context_length: 2048
+  context_length: 1024
   d_model: 384
   d_ff: 1024
   num_layers: 5
@@ -16,16 +16,16 @@ paths:
   valid_bin: /workspace/dataset/val
   model_output: output/mup_search
 
-# batch size: 128*2048=262k tokens
+# batch size: 64*1024*4=262k tokens
 # total: 2000*262k=524M tokens
 training:
   wandb_entity: yuda  # Set to your wandb entity, e.g. pliang
   wandb_project: pretrain
-  train_batch_size: 128
-  eval_batch_size: 128
+  train_batch_size: 64
+  eval_batch_size: 64
   train_steps: 2000
-  gradient_accumulation_steps: 1
-  eval_iterations: 200
+  gradient_accumulation_steps: 4
+  eval_iterations: 800
   eval_interval: 4000
   lr: 1e-3
   embeddings_scale: 1.0

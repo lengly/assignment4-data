@@ -5,13 +5,19 @@ import re
 import os
 os.environ["WANDB_MODE"] = "disabled"
 # Number of experiments
-N = 10
+N = 30
 # List to store results
 results = []
 
 # You can modify the config path as needed
 TRAIN_SCRIPT = 'cs336-basics/scripts/train.py'
 CONFIG_NAME = 'experiment/mup_search'
+
+csv_path = os.path.join(os.path.dirname(__file__), 'search_results.csv')
+# 先写入表头
+with open(csv_path, 'w', newline='') as f:
+    writer = csv.DictWriter(f, fieldnames=['embeddings_scale', 'init_std', 'lr', 'train_loss', 'valid_loss'])
+    writer.writeheader()
 
 for i in range(N):
     # Sample parameters
@@ -48,21 +54,20 @@ for i in range(N):
     if valid_match:
         valid_loss = float(valid_match.group(1))
 
-    results.append({
+    result_row = {
         'embeddings_scale': embeddings_scale,
         'init_std': init_std,
         'lr': lr,
         'train_loss': train_loss,
         'valid_loss': valid_loss
-    })
+    }
+    results.append(result_row)
+
+    # 立即写入当前结果到csv
+    with open(csv_path, 'a', newline='') as f:
+        writer = csv.DictWriter(f, fieldnames=['embeddings_scale', 'init_std', 'lr', 'train_loss', 'valid_loss'])
+        writer.writerow(result_row)
 
     print(f"Experiment {i+1} finished: train_loss={train_loss}, valid_loss={valid_loss}")
-
-# Save results to csv
-csv_path = os.path.join(os.path.dirname(__file__), 'search_results.csv')
-with open(csv_path, 'w', newline='') as f:
-    writer = csv.DictWriter(f, fieldnames=results[0].keys())
-    writer.writeheader()
-    writer.writerows(results)
 
 print(f"All experiments finished. Results saved to {csv_path}")
