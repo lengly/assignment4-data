@@ -40,7 +40,7 @@ class TrainingConfig:
     eval_interval: int = 2_000
     max_grad_norm: float | None = 1.0
     device: str = "cuda"
-    lr: float = 3e-3
+    lr: float = 1.5e-3
     warmup_ratio: float = 0.05
     stable_ratio: float = 0.85
     decay_ratio: float = 0.10
@@ -53,8 +53,8 @@ class TrainingConfig:
     log_interval: int = 20
     save_checkpoints: bool = False
     # muP params
-    embeddings_scale: float = 15
-    init_std: float = 0.012
+    embeddings_scale: float = 12
+    init_std: float = 2e-2
     mup_base_filter_size: int = 1024
     mup_base_hidden_size: int = 384
     
