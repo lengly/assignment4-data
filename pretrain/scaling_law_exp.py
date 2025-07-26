@@ -3,7 +3,7 @@ import csv
 import subprocess
 import re
 import os
-from scalinglaw import ChinchillaScalingExperiment
+# from scalinglaw import ChinchillaScalingExperiment
 
 os.environ["WANDB_MODE"] = "disabled"
 
@@ -13,23 +13,23 @@ CONFIG_NAME = 'experiment/scaling_law'
 
 # Manually defined experiment parameter list (optional)
 MANUAL_EXPERIMENTS = [
-    # Format: [d_model, d_ff, num_layers, num_heads, train_steps]
-    # 1e17
-    [704, 2048, 11, 9, 1120],
-    [640, 1792, 10, 8, 1565],
-    [576, 1536, 9, 7, 2281],
-    [512, 1472, 8, 6, 3202],
-    [448, 1344, 7, 6, 4061],
-    # 3e17
-    [896, 2240, 14, 11, 1878],
-    [768, 2048, 12, 10, 2695],
-    [704, 1728, 11, 9, 3763],
-    [640, 1728, 10, 7, 5498],
-    [576, 1536, 9, 7, 6844],
+    # Format: [d_model, d_ff, num_heads, num_layers, train_steps, batch_size, accum_steps]
+    # 1e17 1*GPU
+    [704, 2048, 11, 9, 1120, 64, 4],
+    [640, 1792, 10, 8, 1565, 64, 4],
+    [576, 1536, 9, 7, 2281, 64, 4],
+    [512, 1472, 8, 6, 3202, 64, 4],
+    [448, 1344, 7, 6, 4061, 64, 4],
+    # 3e17 4*GPU
+    # [896, 2240, 14, 11, 1878, 64, 1],
+    # [768, 2048, 12, 10, 2695, 64, 1],
+    # [704, 1728, 11, 9, 3763, 64, 1],
+    # [640, 1728, 10, 7, 5498, 64, 1],
+    # [576, 1536, 9, 7, 6844, 64, 1],
 ]
 
 experiment_configs = []
-for i, (d_model, d_ff, num_layers, num_heads, train_steps) in enumerate(MANUAL_EXPERIMENTS):
+for i, (d_model, d_ff, num_heads, num_layers, train_steps, batch_size, accum_steps) in enumerate(MANUAL_EXPERIMENTS):
     config = {
         'experiment_id': i + 1,
         'model.d_model': d_model,
@@ -42,15 +42,18 @@ for i, (d_model, d_ff, num_layers, num_heads, train_steps) in enumerate(MANUAL_E
         # Estimate token count: train_steps * 262144
         'training_tokens': train_steps * 262144,
         'batch_size': 262144,
-        'iterations': train_steps
+        'iterations': train_steps,
+        'training.train_batch_size': batch_size,
+        'training.gradient_accumulation_steps': accum_steps,
+        'training.eval_batch_size': batch_size,
     }
     experiment_configs.append(config)
 
 print(f"Generated {len(experiment_configs)} experiment configs")
 
 # Save experiment configs to CSV
-csv_path = os.path.join(os.path.dirname(__file__), 'scaling_law_results.csv')
-with open(csv_path, 'w', newline='') as f:
+csv_path = os.path.join('pretrain', 'scaling_law_results.csv')
+with open(csv_path, 'a', newline='') as f:
     fieldnames = ['experiment_id', 'model.d_model', 'model.d_ff', 'model.num_layers', 
                   'model.num_heads', 'training.train_steps', 'model_size_params', 
                   'training_tokens', 'batch_size', 'iterations', 'train_loss', 'valid_loss']
@@ -76,7 +79,10 @@ for i, config in enumerate(experiment_configs):
         f'model.d_ff={config["model.d_ff"]}',
         f'model.num_layers={config["model.num_layers"]}',
         f'model.num_heads={config["model.num_heads"]}',
-        f'training.train_steps={config["training.train_steps"]}'
+        f'training.train_steps={config["training.train_steps"]}',
+        f'training.train_batch_size={config["training.train_batch_size"]}',
+        f'training.gradient_accumulation_steps={config["training.gradient_accumulation_steps"]}',
+        f'training.eval_batch_size={config["training.eval_batch_size"]}'
     ]
     
     print(f"Command: {' '.join(cmd)}")
@@ -105,7 +111,7 @@ for i, config in enumerate(experiment_configs):
         train_loss = None
         valid_loss = None
         
-        train_match = re.findall(r"Training step [0-9]+, Loss: ([0-9\.eE+-]+)", output)
+        train_match = re.findall(r"Training step [0-9]+, Loss: [0-9\.eE+-]+, Smoothed Loss: ([0-9\.eE+-]+)", output)
         valid_match = re.findall(r"Final estimated validation loss: ([0-9\.eE+-]+)", output)
         
         if train_match:
@@ -119,10 +125,6 @@ for i, config in enumerate(experiment_configs):
         
         print(f"Experiment finished: train_loss={train_loss}, valid_loss={valid_loss}")
         
-    except subprocess.TimeoutExpired:
-        print("Experiment timeout (1 hour)")
-        config['train_loss'] = None
-        config['valid_loss'] = None
     except Exception as e:
         print(f"Experiment error: {e}")
         config['train_loss'] = None

@@ -47,6 +47,7 @@ from cs336_basics.optimizer import get_wsd_lr
 from cs336_basics.train_config import Config, register_configs
 
 import random
+from collections import deque
 
 register_configs()
 
@@ -199,6 +200,7 @@ def main(cfg: Config) -> None:
     batch_x, batch_y = next(train_loader)
     batch_x = torch.tensor(batch_x, dtype=torch.long, device=cfg.training.device)
     batch_y = torch.tensor(batch_y, dtype=torch.long, device=cfg.training.device)
+    loss_history = deque(maxlen=10)
     for i in (pbar := trange(cfg.training.train_steps, desc="Training", disable=not is_master_process)):
         lr = get_wsd_lr(
             i,
@@ -247,10 +249,11 @@ def main(cfg: Config) -> None:
         optimizer.zero_grad(set_to_none=True)
 
         # record the sum of all micro-step loss
-        loss_float = total_loss
+        loss_history.append(total_loss)
+        loss_float = sum(loss_history) / len(loss_history)
 
         if is_master_process:
-            pbar.set_description(f"Training step {i}, Loss: {loss_float:.4f}")
+            pbar.set_description(f"Training step {i}, Loss: {total_loss:.4f}, Smoothed Loss: {loss_float:.4f}")
             if cfg.training.wandb_project and i % cfg.training.log_interval == 0:
                 wandb.log({"train_loss": loss_float, "lr": lr}, step=i)
 
