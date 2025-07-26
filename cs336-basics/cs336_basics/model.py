@@ -205,7 +205,7 @@ class BasicsTransformerLM(nn.Module):
         n_params = sum(p.numel() for p in self.parameters())
         if non_embedding:
             n_params -= self.token_embeddings.weight.numel()
-            n_params -= self.lm_head.weight.numel()
+            # n_params -= self.lm_head.weight.numel()
 
         return n_params
 

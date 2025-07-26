@@ -15,17 +15,17 @@ CONFIG_NAME = 'experiment/scaling_law'
 MANUAL_EXPERIMENTS = [
     # Format: [d_model, d_ff, num_heads, num_layers, train_steps, batch_size, accum_steps]
     # 1e17 1*GPU
-    [704, 2048, 11, 9, 1120, 64, 4],
-    [640, 1792, 10, 8, 1565, 64, 4],
-    [576, 1536, 9, 7, 2281, 64, 4],
-    [512, 1472, 8, 6, 3202, 64, 4],
-    [448, 1344, 7, 6, 4061, 64, 4],
+    # [704, 2048, 11, 9, 1120, 64, 4],
+    # [640, 1792, 10, 8, 1565, 64, 4],
+    # [576, 1536, 9, 7, 2281, 64, 4],
+    # [512, 1472, 8, 6, 3202, 64, 4],
+    # [448, 1344, 7, 6, 4061, 64, 4],
     # 3e17 4*GPU
-    # [896, 2240, 14, 11, 1878, 64, 1],
-    # [768, 2048, 12, 10, 2695, 64, 1],
-    # [704, 1728, 11, 9, 3763, 64, 1],
-    # [640, 1728, 10, 7, 5498, 64, 1],
-    # [576, 1536, 9, 7, 6844, 64, 1],
+    [896, 2240, 14, 11, 1878, 64, 1],
+    [768, 2048, 12, 10, 2695, 64, 1],
+    [704, 1728, 11, 9, 3763, 64, 1],
+    [640, 1728, 10, 7, 5498, 64, 1],
+    [576, 1536, 9, 7, 6844, 64, 1],
 ]
 
 experiment_configs = []
@@ -69,11 +69,11 @@ for i, config in enumerate(experiment_configs):
     print(f"Training steps: {config['training.train_steps']}")
     print(f"Model config: d_model={config['model.d_model']}, d_ff={config['model.d_ff']}, "
           f"layers={config['model.num_layers']}, heads={config['model.num_heads']}")
-    
+
     # Build command
     cmd = [
         'uv', 'run',
-        'python', TRAIN_SCRIPT,
+        'torchrun', '--standalone', '--nproc_per_node=4', TRAIN_SCRIPT,
         f'--config-name={CONFIG_NAME}',
         f'model.d_model={config["model.d_model"]}',
         f'model.d_ff={config["model.d_ff"]}',
@@ -133,6 +133,11 @@ for i, config in enumerate(experiment_configs):
     # Save result to CSV immediately
     with open(csv_path, 'a', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
+
+        config.pop('training.train_batch_size', None)
+        config.pop('training.eval_batch_size', None)
+        config.pop('training.gradient_accumulation_steps', None)
+        
         writer.writerow(config)
 
 print(f"\nAll experiments finished! Results saved to: {csv_path}")
