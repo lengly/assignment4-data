@@ -43,7 +43,7 @@ from tqdm import tqdm, trange
 import wandb
 from cs336_basics.data import UniformMixDataLoader
 from cs336_basics.model import BasicsTransformerLM
-from cs336_basics.optimizer import get_wsd_lr
+from cs336_basics.optimizer import get_wsd_lr,get_cosine_lr
 from cs336_basics.train_config import Config, register_configs
 
 import random
@@ -201,14 +201,15 @@ def main(cfg: Config) -> None:
     batch_x = torch.tensor(batch_x, dtype=torch.long, device=cfg.training.device)
     batch_y = torch.tensor(batch_y, dtype=torch.long, device=cfg.training.device)
     loss_history = deque(maxlen=10)
+    warmup_iters = model.get_num_params() // \
+        (2 * cfg.training.train_batch_size * cfg.training.gradient_accumulation_steps * ddp_world_size * cfg.model.context_length)
     for i in (pbar := trange(cfg.training.train_steps, desc="Training", disable=not is_master_process)):
-        lr = get_wsd_lr(
+        lr = get_cosine_lr(
             i,
             max_learning_rate=cfg.training.lr,
             min_learning_rate=cfg.training.lr * 0.1,
-            warmup_iters=int(cfg.training.train_steps * cfg.training.warmup_ratio),
-            stable_iters=int(cfg.training.train_steps * cfg.training.stable_ratio),
-            decay_iters=int(cfg.training.train_steps * cfg.training.decay_ratio),
+            warmup_iters=warmup_iters,
+            cosine_iters=int(cfg.training.train_steps),
         )
         # Update learning rates for each param group
         optimizer.param_groups[0]["lr"] = lr * attn_lr_scale  # attn
@@ -249,6 +250,10 @@ def main(cfg: Config) -> None:
         optimizer.zero_grad(set_to_none=True)
 
         # record the sum of all micro-step loss
+        if is_ddp:
+            total_loss_tensor = torch.tensor(total_loss, device=cfg.training.device)
+            torch.distributed.all_reduce(total_loss_tensor, op=torch.distributed.ReduceOp.SUM)
+            total_loss = total_loss_tensor.item() / ddp_world_size
         loss_history.append(total_loss)
         loss_float = sum(loss_history) / len(loss_history)
 
