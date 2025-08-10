@@ -150,7 +150,9 @@ def main(cfg: Config) -> None:
 
     # Move model to the device
     model = model.to(cfg.training.device)
-
+    warmup_iters = model.get_num_params() // \
+        (cfg.training.train_batch_size * cfg.training.gradient_accumulation_steps * ddp_world_size * cfg.model.context_length)
+    print(f"warmup_iters: {warmup_iters}, total_iters: {cfg.training.train_steps}, warmup_iters/total_iters: {warmup_iters/cfg.training.train_steps}")
     # compile the model, requires torch 2.0
     if cfg.training.compile:
         print("Compiling model")
@@ -201,15 +203,14 @@ def main(cfg: Config) -> None:
     batch_x = torch.tensor(batch_x, dtype=torch.long, device=cfg.training.device)
     batch_y = torch.tensor(batch_y, dtype=torch.long, device=cfg.training.device)
     loss_history = deque(maxlen=10)
-    warmup_iters = model.get_num_params() // \
-        (2 * cfg.training.train_batch_size * cfg.training.gradient_accumulation_steps * ddp_world_size * cfg.model.context_length)
+
     for i in (pbar := trange(cfg.training.train_steps, desc="Training", disable=not is_master_process)):
         lr = get_cosine_lr(
             i,
             max_learning_rate=cfg.training.lr,
             min_learning_rate=cfg.training.lr * 0.1,
             warmup_iters=warmup_iters,
-            cosine_iters=int(cfg.training.train_steps),
+            cosine_cycle_iters=int(cfg.training.train_steps),
         )
         # Update learning rates for each param group
         optimizer.param_groups[0]["lr"] = lr * attn_lr_scale  # attn
