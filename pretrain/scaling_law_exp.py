@@ -15,17 +15,23 @@ CONFIG_NAME = 'experiment/scaling_law'
 MANUAL_EXPERIMENTS = [
     # Format: [d_model, d_ff, num_heads, num_layers, train_steps, batch_size, accum_steps]
     # 1e17 4*GPU
-    [704, 2048, 11, 9, 1120, 64, 1],
-    [640, 1792, 10, 8, 1565, 64, 1],
-    [576, 1536, 9, 7, 2281, 64, 1],
-    [512, 1472, 8, 6, 3202, 64, 1],
-    [448, 1344, 7, 6, 4061, 64, 1],
+    # [704, 2048, 11, 9, 1120, 64, 1],
+    # [640, 1792, 10, 8, 1565, 64, 1],
+    # [576, 1536, 9, 7, 2281, 64, 1],
+    # [512, 1472, 8, 6, 3202, 64, 1],
+    # [448, 1344, 7, 6, 4061, 64, 1],
     # 3e17 4*GPU
-    [896, 2240, 14, 11, 1878, 64, 1],
-    [768, 2048, 12, 10, 2695, 64, 1],
-    [704, 1728, 11, 9, 3763, 64, 1],
-    [640, 1728, 10, 7, 5498, 64, 1],
-    [576, 1536, 9, 7, 6844, 64, 1],
+    # [896, 2240, 14, 11, 1878, 64, 1],
+    # [768, 2048, 12, 10, 2695, 64, 1],
+    # [704, 1728, 11, 9, 3763, 64, 1],
+    # [640, 1728, 10, 7, 5498, 64, 1],
+    # [576, 1536, 9, 7, 6844, 64, 1],
+    # 1e18 8*GPU
+    [1024, 2880, 8, 14, 1714, 32, 4],
+    [960, 2496, 15, 12, 2436, 32, 4],
+    [832, 2496, 13, 10, 7065, 64, 1],
+    [768, 2048, 12, 9, 9981, 64, 1],
+    [704, 1856, 11, 9, 11969, 64, 1],
 ]
 
 experiment_configs = []
@@ -40,8 +46,8 @@ for i, (d_model, d_ff, num_heads, num_layers, train_steps, batch_size, accum_ste
         # Estimate parameter count: (4 * d_model^2 + 3 * d_model * d_ff) * num_layers
         'model_size_params': (4 * d_model ** 2 + 3 * d_model * d_ff) * num_layers,
         # Estimate token count: train_steps * 262144
-        'training_tokens': train_steps * 262144,
-        'batch_size': 262144,
+        'training_tokens': train_steps * 262144 * accum_steps,
+        'batch_size': 262144 * accum_steps,
         'iterations': train_steps,
         'training.train_batch_size': batch_size,
         'training.gradient_accumulation_steps': accum_steps,

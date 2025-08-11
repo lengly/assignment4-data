@@ -18,6 +18,12 @@ To run multi-GPU training, use `torchrun`. e.g., for single-node, 2 GPU:
 ```
 uv run torchrun --standalone --nproc_per_node=2 scripts/train.py --config-name=experiment/your_data
 ```
+
+To run with DeepSpeed ZeRO-2:
+
+```
+deepspeed --num_gpus=2 scripts/train.py --config-name=experiment/your_data
+```
 """
 
 from __future__ import annotations
@@ -25,20 +31,30 @@ from __future__ import annotations
 import json
 import logging
 import os
+from contextlib import nullcontext
 from pathlib import Path
 
 import hydra
+from hydra import compose, initialize
 import numpy as np
 import numpy.typing as npt
 import torch
 import torch.nn.functional as F
-from omegaconf import OmegaConf
+from omegaconf import OmegaConf, DictConfig
 from rich.pretty import pprint as pprint
 from rich.traceback import install
 from torch.distributed import destroy_process_group, init_process_group
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
 from tqdm import tqdm, trange
+
+# DeepSpeed imports
+try:
+    import deepspeed
+    DEEPSPEED_AVAILABLE = True
+except ImportError:
+    DEEPSPEED_AVAILABLE = False
+    print("Warning: DeepSpeed not available. Install with: pip install deepspeed")
 
 import wandb
 from cs336_basics.data import UniformMixDataLoader
@@ -58,8 +74,7 @@ if torch.cuda.is_available():
 
 install(show_locals=True)
 
-@hydra.main(version_base=None, config_path=str(Path("cs336-basics/configs").absolute().resolve()), config_name="experiment/your_data")
-def main(cfg: Config) -> None:
+def main(cfg: DictConfig) -> None:
 
     cfg_dict = OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
     pprint(cfg_dict)
@@ -93,9 +108,22 @@ def main(cfg: Config) -> None:
     )
     pprint(model)
 
-    # Wrap model in DDP, if we're using it.
+    # Initialize distributed training
     is_ddp = int(os.environ.get("RANK", -1)) != -1
-    if is_ddp:
+    is_deepspeed = cfg.training.deepspeed.enabled and DEEPSPEED_AVAILABLE
+    
+    if is_deepspeed:
+        # DeepSpeed will handle distributed initialization
+        deepspeed.init_distributed()
+        ddp_rank = int(os.environ.get("RANK", 0))
+        ddp_local_rank = int(os.environ.get("LOCAL_RANK", 0))
+        ddp_world_size = int(os.environ.get("WORLD_SIZE", 1))
+        device = f"cuda:{ddp_local_rank}"
+        torch.cuda.set_device(device)
+        is_master_process = ddp_rank == 0
+        if is_master_process:
+            logger.info("Using DeepSpeed ZeRO-2")
+    elif is_ddp:
         init_process_group(backend="nccl")
         ddp_rank = int(os.environ["RANK"])
         ddp_local_rank = int(os.environ["LOCAL_RANK"])
@@ -146,7 +174,11 @@ def main(cfg: Config) -> None:
     if is_master_process:
         logger.info(f"Using dtype: {torch_dtype}")
 
-    amp_ctx = torch.amp.autocast(device_type="cuda", dtype=torch_dtype)
+    # Only use autocast when not using DeepSpeed
+    if not is_deepspeed:
+        amp_ctx = torch.amp.autocast(device_type="cuda", dtype=torch_dtype)
+    else:
+        amp_ctx = nullcontext()  # No-op context manager for DeepSpeed
 
     # Move model to the device
     model = model.to(cfg.training.device)
@@ -154,12 +186,16 @@ def main(cfg: Config) -> None:
         (cfg.training.train_batch_size * cfg.training.gradient_accumulation_steps * ddp_world_size * cfg.model.context_length)
     print(f"warmup_iters: {warmup_iters}, total_iters: {cfg.training.train_steps}, warmup_iters/total_iters: {warmup_iters/cfg.training.train_steps}")
     # compile the model, requires torch 2.0
-    if cfg.training.compile:
+    if cfg.training.compile and not is_deepspeed:
         print("Compiling model")
         model = torch.compile(model)
         print("Model compiled")
 
-    if is_ddp:
+    # Wrap model in DDP or DeepSpeed
+    if is_deepspeed:
+        # DeepSpeed will handle model wrapping
+        pass
+    elif is_ddp:
         model = DDP(model, device_ids=[ddp_local_rank])
 
     # Set up the AdamW optimizer.
@@ -191,12 +227,16 @@ def main(cfg: Config) -> None:
     ]
 
     # Create AdamW optimizer and use the fused version if it is available
-    optimizer = torch.optim.AdamW(
-        optim_groups,
-        betas=(cfg.training.adam_beta1, cfg.training.adam_beta2),
-        eps=cfg.training.adam_eps,
-        fused=True,
-    )
+    if is_deepspeed:
+        # DeepSpeed will handle optimizer creation
+        optimizer = None
+    else:
+        optimizer = torch.optim.AdamW(
+            optim_groups,
+            betas=(cfg.training.adam_beta1, cfg.training.adam_beta2),
+            eps=cfg.training.adam_eps,
+            fused=True,
+        )
 
     # Get the first batch
     batch_x, batch_y = next(train_loader)
@@ -204,7 +244,69 @@ def main(cfg: Config) -> None:
     batch_y = torch.tensor(batch_y, dtype=torch.long, device=cfg.training.device)
     loss_history = deque(maxlen=10)
 
+    # Initialize DeepSpeed if enabled
+    if is_deepspeed:
+        # Create DeepSpeed config
+        ds_config = {
+            "train_batch_size": cfg.training.train_batch_size * ddp_world_size * cfg.training.gradient_accumulation_steps,
+            "gradient_accumulation_steps": 1,  # DeepSpeed handles this internally
+            "optimizer": {
+                "type": "AdamW",
+                "params": {
+                    "lr": cfg.training.lr,
+                    "betas": [cfg.training.adam_beta1, cfg.training.adam_beta2],
+                    "eps": cfg.training.adam_eps,
+                    "weight_decay": cfg.training.weight_decay,
+                }
+            },
+            # 移除内置调度器，使用手动学习率控制
+            # "scheduler": {
+            #     "type": "WarmupCosineLR",
+            #     "params": {
+            #         "warmup_min_lr": cfg.training.lr * 0.1,
+            #         "warmup_max_lr": cfg.training.lr,
+            #         "warmup_num_steps": warmup_iters,
+            #         "total_num_steps": cfg.training.train_steps,
+            #     }
+            # },
+            "zero_optimization": {
+                "stage": cfg.training.deepspeed.zero_stage,
+                "offload_optimizer": {
+                    "device": "cpu" if cfg.training.deepspeed.offload_optimizer else "none",
+                    "pin_memory": cfg.training.deepspeed.pin_memory
+                },
+                "offload_param": {
+                    "device": "cpu" if cfg.training.deepspeed.offload_param else "none",
+                    "pin_memory": cfg.training.deepspeed.pin_memory
+                },
+                "allgather_partitions": cfg.training.deepspeed.allgather_partitions,
+                "allgather_bucket_size": cfg.training.deepspeed.allgather_bucket_size,
+                "reduce_bucket_size": cfg.training.deepspeed.reduce_bucket_size,
+                "contiguous_gradients": cfg.training.deepspeed.contiguous_gradients,
+                "overlap_comm": cfg.training.deepspeed.overlap_comm,
+            },
+            "fp16": {
+                "enabled": cfg.training.dtype == "float16"
+            },
+            "bf16": {
+                "enabled": cfg.training.dtype == "bfloat16"
+            },
+            "gradient_clipping": cfg.training.max_grad_norm if cfg.training.max_grad_norm is not None else 1.0,
+            "wall_clock_breakdown": cfg.training.deepspeed.wall_clock_breakdown,
+        }
+        
+        # Initialize DeepSpeed engine
+        model, optimizer, _, _ = deepspeed.initialize(
+            model=model,
+            config=ds_config,
+            model_parameters=optim_groups  # 使用预定义的参数组
+        )
+        
+        if is_master_process:
+            logger.info("DeepSpeed initialized successfully")
+
     for i in (pbar := trange(cfg.training.train_steps, desc="Training", disable=not is_master_process)):
+        # Learning rate scheduling
         lr = get_cosine_lr(
             i,
             max_learning_rate=cfg.training.lr,
@@ -212,6 +314,7 @@ def main(cfg: Config) -> None:
             warmup_iters=warmup_iters,
             cosine_cycle_iters=int(cfg.training.train_steps),
         )
+        
         # Update learning rates for each param group
         optimizer.param_groups[0]["lr"] = lr * attn_lr_scale  # attn
         optimizer.param_groups[1]["lr"] = lr * ffn_lr_scale   # ffn
@@ -220,8 +323,8 @@ def main(cfg: Config) -> None:
 
         total_loss = 0.0
         for micro_step_idx in range(cfg.training.gradient_accumulation_steps):
-            if is_ddp:
-                # When using DDP, don't all-reduce gradients until the last step.
+            # DDP gradient sync control
+            if is_ddp and not is_deepspeed:
                 model.require_backward_grad_sync = micro_step_idx == cfg.training.gradient_accumulation_steps - 1
 
             with amp_ctx:
@@ -238,20 +341,29 @@ def main(cfg: Config) -> None:
                     / cfg.training.gradient_accumulation_steps
                 )
 
-            loss.backward()
+            # Backward pass
+            if is_deepspeed:
+                model.backward(loss)
+            else:
+                loss.backward()
+            
             total_loss += loss.item()
 
             batch_x = next_batch_x
             batch_y = next_batch_y
 
-        if cfg.training.max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
-
-        optimizer.step()
-        optimizer.zero_grad(set_to_none=True)
+        # Optimization step
+        if is_deepspeed:
+            # DeepSpeed handles gradient clipping and optimization internally
+            model.step()
+        else:
+            if cfg.training.max_grad_norm is not None:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.training.max_grad_norm)
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
 
         # record the sum of all micro-step loss
-        if is_ddp:
+        if is_deepspeed or is_ddp:
             total_loss_tensor = torch.tensor(total_loss, device=cfg.training.device)
             torch.distributed.all_reduce(total_loss_tensor, op=torch.distributed.ReduceOp.SUM)
             total_loss = total_loss_tensor.item() / ddp_world_size
@@ -287,7 +399,11 @@ def main(cfg: Config) -> None:
                         json.dump(model_config, f, indent=4)
 
                     # Write weights:
-                    torch.save(model.state_dict(), model_weights_output_path)
+                    if is_deepspeed:
+                        # DeepSpeed handles model saving
+                        model.save_checkpoint(str(model_weights_output_path.parent), tag=f"step_{i:010d}")
+                    else:
+                        torch.save(model.state_dict(), model_weights_output_path)
 
     # Calculate final estimated dev loss
     dev_loss = estimate_dev_loss(
@@ -306,9 +422,16 @@ def main(cfg: Config) -> None:
         # Save the model weights
         model_weights_output_path = cfg.paths.model_output / "model.pt"
         logger.info(f"Saving model weights to {model_weights_output_path}")
-        torch.save(model.state_dict(), model_weights_output_path)
+        if is_deepspeed:
+            # DeepSpeed handles model saving
+            model.save_checkpoint(str(cfg.paths.model_output), tag="final")
+        else:
+            torch.save(model.state_dict(), model_weights_output_path)
 
-    if is_ddp:
+    if is_deepspeed:
+        # DeepSpeed handles cleanup
+        pass
+    elif is_ddp:
         destroy_process_group()
 
 
@@ -363,4 +486,22 @@ def estimate_dev_loss(
 
 
 if __name__ == "__main__":
-    main()
+    # Handle DeepSpeed arguments before Hydra
+    import sys
+    import argparse
+    
+    # Parse DeepSpeed arguments
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--local_rank', type=int, default=-1)
+    args, unknown = parser.parse_known_args()
+    
+    # Set environment variables for DeepSpeed
+    if args.local_rank != -1:
+        os.environ['LOCAL_RANK'] = str(args.local_rank)
+        os.environ['RANK'] = str(args.local_rank)  # For single node
+        os.environ['WORLD_SIZE'] = str(torch.cuda.device_count())  # Assume all GPUs
+    
+    with initialize(version_base=None, config_path="../configs"):
+        cfg = compose(config_name="experiment/deepspeed_1B")
+        main(cfg)
+    

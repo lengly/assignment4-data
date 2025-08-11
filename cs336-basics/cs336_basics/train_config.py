@@ -28,6 +28,24 @@ class ModelConfig:
 
 
 @dataclass
+class DeepSpeedConfig:
+    enabled: bool = False
+    zero_stage: int = 2
+    offload_optimizer: bool = False
+    offload_param: bool = False
+    allgather_partitions: bool = True
+    allgather_bucket_size: int = 200000000  # 2e8
+    reduce_bucket_size: int = 200000000     # 2e8
+    contiguous_gradients: bool = True
+    cpu_offload: bool = False
+    overlap_comm: bool = True
+    pin_memory: bool = False
+    find_unused_parameters: bool = False
+    force_ds_cpu_offload: bool = False
+    wall_clock_breakdown: bool = False
+
+
+@dataclass
 class TrainingConfig:
     seed: int = 0
     dtype: str = "bfloat16"
@@ -57,6 +75,8 @@ class TrainingConfig:
     init_std: float = 2e-2
     mup_base_filter_size: int = 1024
     mup_base_hidden_size: int = 384
+    # DeepSpeed config
+    deepspeed: DeepSpeedConfig = field(default_factory=DeepSpeedConfig)
     
 
 @dataclass

@@ -1,0 +1,50 @@
+# @package _global_
+
+# DeepSpeed ZeRO-2 训练配置示例
+# 使用命令: deepspeed --num_gpus=4 scripts/train.py --config-name=experiment/deepspeed_1B
+
+model:
+  vocab_size: 50257
+  context_length: 2048
+  d_model: 1920
+  d_ff: 5120
+  num_layers: 24
+  num_heads: 15
+  rope_theta: 10000.0
+
+paths:
+  train_bin: /workspace/dataset/train  # 请修改为您的训练数据路径
+  valid_bin: /workspace/dataset/val    # 请修改为您的验证数据路径
+  model_output: output/deepspeed_example
+
+training:
+  wandb_entity: yuda  # 请修改为您的wandb实体
+  wandb_project: pretrain
+  train_batch_size: 8
+  eval_batch_size: 8
+  train_steps: 20000
+  gradient_accumulation_steps: 8
+  eval_iterations: null
+  eval_interval: 5000
+  lr: 1.5e-3
+  dtype: "bfloat16"
+  compile: false  # DeepSpeed与torch.compile可能有兼容性问题
+  log_interval: 10
+  save_checkpoints: true
+  
+  # DeepSpeed配置
+  deepspeed:
+    enabled: true
+    zero_stage: 2  # ZeRO-2优化
+    offload_optimizer: false  # 是否将优化器状态卸载到CPU
+    offload_param: false      # 是否将参数卸载到CPU
+    allgather_partitions: true
+    allgather_bucket_size: 200000000
+    reduce_bucket_size: 200000000
+    contiguous_gradients: true
+    cpu_offload: false
+    overlap_comm: true
+    pin_memory: false
+    find_unused_parameters: false
+    force_ds_cpu_offload: false
+    wall_clock_breakdown: false
