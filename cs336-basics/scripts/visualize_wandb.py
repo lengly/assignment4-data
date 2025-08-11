@@ -253,23 +253,51 @@ class WandbVisualizer:
                 print("警告: 无法读取wandb文件，创建模拟数据")
                 return self._create_mock_data()
             
-            # 简单的解析逻辑 - 查找历史数据
+            # 解析训练日志行 - 提取训练步数、损失和学习率
             lines = content.split('\n')
             history_data = []
             
             for line in lines:
-                if line.strip() and not line.startswith('#'):
-                    try:
-                        # 尝试解析JSON格式的数据
-                        data = json.loads(line)
-                        if isinstance(data, dict) and '_step' in data:
-                            history_data.append(data)
-                    except json.JSONDecodeError:
-                        continue
-            
+                if not line.startswith('Training step'):
+                    continue
+                line = line.strip().split(']')[0]
+                try:
+                    # 解析训练日志行格式: "Training step X, Loss: Y, Smoothed Loss: Z, lr: W"
+                    parts = line.split(', ')
+                    
+                    # 提取训练步数
+                    step_part = parts[0]
+                    step = int(step_part.split(' ')[-1])
+                    
+                    # 提取损失值
+                    loss_part = parts[1]
+                    loss = float(loss_part.split(': ')[-1])
+
+                    # 提取平滑损失值
+                    smoothed_loss_part = parts[2]
+                    smoothed_loss = float(smoothed_loss_part.split(': ')[-1])
+
+                    # 提取学习率
+                    lr_part = parts[3]
+                    lr = float(lr_part.split(': ')[1])
+                    
+                    # 创建数据记录
+                    data = {
+                        '_step': step,
+                        'train_loss': loss,
+                        'smoothed_loss': smoothed_loss,
+                        'lr': lr
+                    }
+                    history_data.append(data)
+                    
+                except (IndexError, ValueError) as e:
+                    # 如果解析失败，跳过这一行
+                    continue
+            print(len(history_data))
             if not history_data:
                 # 如果没有找到历史数据，创建模拟数据
                 print("警告: 没有找到历史数据，创建模拟数据")
+                exit(0)
                 return self._create_mock_data()
             
             return pd.DataFrame(history_data)
@@ -325,6 +353,10 @@ class WandbVisualizer:
         if 'train_loss' in history.columns:
             plt.plot(history['_step'], history['train_loss'], 
                     label='Training Loss', linewidth=2, color='blue')
+        
+        if 'smoothed_loss' in history.columns:
+            plt.plot(history['_step'], history['smoothed_loss'], 
+                    label='Smoothed Loss', linewidth=2, color='orange', linestyle='--')
         
         plt.xlabel('Training Steps')
         plt.ylabel('Loss')
@@ -390,6 +422,10 @@ class WandbVisualizer:
             plt.plot(history['_step'], history['train_loss'], 
                     label='Training Loss', linewidth=2, color='blue')
         
+        if 'smoothed_loss' in history.columns:
+            plt.plot(history['_step'], history['smoothed_loss'], 
+                    label='Smoothed Loss', linewidth=2, color='orange', linestyle='--')
+        
         if 'eval_loss' in history.columns:
             eval_data = history[history['eval_loss'].notna()]
             if not eval_data.empty:
@@ -416,11 +452,15 @@ class WandbVisualizer:
         # 训练损失
         if 'train_loss' in history.columns:
             axes[0, 0].plot(history['_step'], history['train_loss'], 
-                           color='blue', linewidth=2)
-            axes[0, 0].set_title('Training Loss')
-            axes[0, 0].set_xlabel('Training Steps')
-            axes[0, 0].set_ylabel('Loss')
-            axes[0, 0].grid(True, alpha=0.3)
+                           color='blue', linewidth=2, label='Training Loss')
+        if 'smoothed_loss' in history.columns:
+            axes[0, 0].plot(history['_step'], history['smoothed_loss'], 
+                           color='orange', linewidth=2, linestyle='--', label='Smoothed Loss')
+        axes[0, 0].set_title('Training Loss')
+        axes[0, 0].set_xlabel('Training Steps')
+        axes[0, 0].set_ylabel('Loss')
+        axes[0, 0].legend()
+        axes[0, 0].grid(True, alpha=0.3)
         
         # 验证损失
         if 'eval_loss' in history.columns:
@@ -447,6 +487,9 @@ class WandbVisualizer:
         if 'train_loss' in history.columns:
             axes[1, 1].plot(history['_step'], history['train_loss'], 
                            label='Training Loss', color='blue', linewidth=2)
+        if 'smoothed_loss' in history.columns:
+            axes[1, 1].plot(history['_step'], history['smoothed_loss'], 
+                           label='Smoothed Loss', color='orange', linewidth=2, linestyle='--')
         if 'eval_loss' in history.columns:
             eval_data = history[history['eval_loss'].notna()]
             if not eval_data.empty:
@@ -487,6 +530,12 @@ class WandbVisualizer:
             min_train_loss = history['train_loss'].min()
             print(f"最终训练损失: {final_train_loss:.4f}")
             print(f"最小训练损失: {min_train_loss:.4f}")
+        
+        if 'smoothed_loss' in history.columns and not history['smoothed_loss'].empty:
+            final_smoothed_loss = history['smoothed_loss'].iloc[-1]
+            min_smoothed_loss = history['smoothed_loss'].min()
+            print(f"最终平滑损失: {final_smoothed_loss:.4f}")
+            print(f"最小平滑损失: {min_smoothed_loss:.4f}")
         
         if 'eval_loss' in history.columns:
             eval_data = history[history['eval_loss'].notna()]

@@ -371,7 +371,7 @@ def main(cfg: DictConfig) -> None:
         loss_float = sum(loss_history) / len(loss_history)
 
         if is_master_process:
-            pbar.set_description(f"Training step {i}, Loss: {total_loss:.4f}, Smoothed Loss: {loss_float:.4f}")
+            pbar.set_description(f"Training step {i}, Loss: {total_loss:.4f}, Smoothed Loss: {loss_float:.4f}, lr: {lr:.6f}")
             if cfg.training.wandb_project and i % cfg.training.log_interval == 0:
                 wandb.log({"train_loss": loss_float, "lr": lr}, step=i)
 

@@ -15,7 +15,7 @@ model:
 paths:
   train_bin: /workspace/dataset/train  # 请修改为您的训练数据路径
   valid_bin: /workspace/dataset/val    # 请修改为您的验证数据路径
-  model_output: output/deepspeed_example
+  model_output: output/deepspeed_1B
 
 training:
   wandb_entity: yuda  # 请修改为您的wandb实体
@@ -25,7 +25,7 @@ training:
   train_steps: 20000
   gradient_accumulation_steps: 8
   eval_iterations: null
-  eval_interval: 5000
+  eval_interval: 1000
   lr: 1.5e-3
   dtype: "bfloat16"
   compile: false  # DeepSpeed与torch.compile可能有兼容性问题

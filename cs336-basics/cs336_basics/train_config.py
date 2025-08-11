@@ -69,7 +69,7 @@ class TrainingConfig:
     wandb_project: str | None = None
     wandb_entity: str | None = None
     log_interval: int = 20
-    save_checkpoints: bool = False
+    save_checkpoints: bool = True
     # muP params
     embeddings_scale: float = 12
     init_std: float = 2e-2

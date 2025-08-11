@@ -28,6 +28,14 @@ from torch import Tensor
 from torch.nn.attention import SDPBackend, sdpa_kernel
 from cs336_basics.train_config import Config
 
+# FlashAttention imports
+try:
+    from flash_attn import flash_attn_func
+    FLASH_ATTN_AVAILABLE = True
+except ImportError:
+    FLASH_ATTN_AVAILABLE = False
+    print("Warning: FlashAttention not available. Falling back to standard attention.")
+
 logger = logging.getLogger(__name__)
 
 
@@ -457,15 +465,36 @@ class CausalMultiHeadSelfAttention(nn.Module):
         Q = self.positional_encoder(Q, token_positions)
         K = self.positional_encoder(K, token_positions)
 
-        # Shape: (..., num_heads, sequence_length, d_k)
-        attn_output = F.scaled_dot_product_attention(
-            query=Q,
-            key=K,
-            value=V,
-            is_causal=True,
-            enable_gqa=False,
-            scale=1/self.d_k,
-        )
+        # Use FlashAttention if available, otherwise fall back to standard attention
+        if FLASH_ATTN_AVAILABLE:
+            # FlashAttention expects (batch, seqlen, nheads, headdim)
+            # We need to transpose from (..., nheads, seqlen, headdim) to (..., seqlen, nheads, headdim)
+            Q = Q.transpose(-2, -3)  # (..., seqlen, nheads, headdim)
+            K = K.transpose(-2, -3)  # (..., seqlen, nheads, headdim)
+            V = V.transpose(-2, -3)  # (..., seqlen, nheads, headdim)
+            
+            # FlashAttention with causal mask
+            attn_output = flash_attn_func(
+                q=Q,
+                k=K,
+                v=V,
+                dropout_p=0.0,  # No dropout during inference
+                causal=True,
+                softmax_scale=1/self.d_k,
+            )
+            
+            # Transpose back to (..., nheads, seqlen, headdim)
+            attn_output = attn_output.transpose(-2, -3)
+        else:
+            # Fallback to standard scaled dot product attention
+            attn_output = F.scaled_dot_product_attention(
+                query=Q,
+                key=K,
+                value=V,
+                is_causal=True,
+                enable_gqa=False,
+                scale=1/self.d_k,
+            )
 
         # Concatenate the attention output from all heads.
         # (..., sequence_length, num_heads * d_v).
