@@ -293,6 +293,9 @@ def main(cfg: DictConfig) -> None:
             },
             "gradient_clipping": cfg.training.max_grad_norm if cfg.training.max_grad_norm is not None else 1.0,
             "wall_clock_breakdown": cfg.training.deepspeed.wall_clock_breakdown,
+            "checkpoint": {
+                "tag_validation": "FAIL",
+            }
         }
         
         # Initialize DeepSpeed engine
@@ -389,20 +392,20 @@ def main(cfg: DictConfig) -> None:
                 if cfg.training.wandb_project:
                     wandb.log({"eval_loss": dev_loss}, step=i)
 
-                if cfg.training.save_checkpoints:
-                    model_weights_output_path = cfg.paths.model_output / f"step_{i:010d}" / "model.pt"
-                    model_weights_output_path.parent.mkdir(parents=True, exist_ok=True)
-
-                    # Need both config and weights to load the model
-                    # Write config:
+            if cfg.training.save_checkpoints:
+                model_weights_output_path = cfg.paths.model_output / f"step_{i:010d}" / "model.pt"
+                model_weights_output_path.parent.mkdir(parents=True, exist_ok=True)
+                # Need both config and weights to load the model
+                # Write config:
+                if is_master_process:
                     with open(model_weights_output_path.parent / "model_config.json", "w") as f:
                         json.dump(model_config, f, indent=4)
-
-                    # Write weights:
-                    if is_deepspeed:
-                        # DeepSpeed handles model saving
-                        model.save_checkpoint(str(model_weights_output_path.parent), tag=f"step_{i:010d}")
-                    else:
+                # Write weights:
+                if is_deepspeed:
+                    # DeepSpeed handles model saving
+                    model.save_checkpoint(str(cfg.paths.model_output), tag=f"step_{i:010d}")
+                else:
+                    if is_master_process:
                         torch.save(model.state_dict(), model_weights_output_path)
 
     # Calculate final estimated dev loss
