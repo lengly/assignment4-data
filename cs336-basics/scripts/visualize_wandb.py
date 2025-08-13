@@ -256,8 +256,39 @@ class WandbVisualizer:
             # 解析训练日志行 - 提取训练步数、损失和学习率
             lines = content.split('\n')
             history_data = []
+            val_data = [{
+                "_step": 2000,
+                "eval_loss": 3.5110038349494785,
+            },{
+                "_step": 4000,
+                "eval_loss": 3.4043038777297916,
+            },{
+                "_step": 6000,
+                "eval_loss": 3.273960794898957,
+            },{
+                "_step": 8000,
+                "eval_loss": 3.17942839899771,
+            },{
+                "_step": 10000,
+                "eval_loss": 3.1425857643415904,
+            },{
+                "_step": 12000,
+                "eval_loss": 3.15531418065515,
+            },{
+                "_step": 14000,
+                "eval_loss": 3.129877082993807,
+            },{
+                "_step": 16000,
+                "eval_loss": 3.1340265187011083,
+            },{
+                "_step": 18000,
+                "eval_loss": 3.155307814537158,
+            }]
+            history_data.extend(val_data)
             
             for line in lines:
+                if line.count('eval_loss') != 0:
+                    print(line)
                 if not line.startswith('Training step'):
                     continue
                 line = line.strip().split(']')[0]
